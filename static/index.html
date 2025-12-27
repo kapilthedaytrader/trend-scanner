@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>IBKR Phase + Candle Prediction</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .row { display:flex; gap: 16px; align-items:flex-start; }
+    .panel { width: 420px; }
+    img { max-width: 100%; border: 1px solid #ddd; }
+    pre { background:#f7f7f7; padding:10px; white-space: pre-wrap; }
+    input { width: 140px; padding: 6px; }
+    button { padding: 6px 10px; }
+  </style>
+</head>
+<body>
+  <h2>IBKR Market Phase + Tomorrow Candle Prediction</h2>
+
+  <div>
+    Symbol: <input id="symbol" value="AAPL"/>
+    Exchange: <input id="exchange" value="SMART"/>
+    Currency: <input id="currency" value="USD"/>
+    Port: <input id="port" value="7497"/>
+    <button onclick="run()">Analyze</button>
+  </div>
+
+  <div class="row" style="margin-top:16px;">
+    <div class="panel">
+      <h3>Result</h3>
+      <pre id="out">Click Analyze.</pre>
+    </div>
+
+    <div style="flex:1;">
+      <h3>Annotated Chart</h3>
+      <img id="chart" alt="chart will appear here"/>
+    </div>
+  </div>
+
+<script>
+async function run() {
+  const symbol = document.getElementById('symbol').value.trim();
+  const exchange = document.getElementById('exchange').value.trim();
+  const currency = document.getElementById('currency').value.trim();
+  const port = document.getElementById('port').value.trim();
+
+  const qs = new URLSearchParams({symbol, exchange, currency});
+  const r = await fetch('/api/analyze?' + qs.toString());
+  const j = await r.json();
+  document.getElementById('out').textContent = JSON.stringify(j, null, 2);
+
+  // cache-bust image
+  document.getElementById('chart').src = '/api/chart.png?' + qs.toString() + '&_=' + Date.now();
+}
+</script>
+</body>
+</html>
