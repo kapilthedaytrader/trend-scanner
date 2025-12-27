@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ibkr_worker import IBKRWorker, IBKRConfig
 from analysis import add_indicators, predict_tomorrow
-from render import render_chart_png
+from render import render_chart_waves, render_chart_candlestick, render_chart_close, render_chart_png
 
 app = FastAPI(title="IBKR Market Phase + Candle Prediction")
 
@@ -75,6 +75,7 @@ def chart_png(
     duration: str = "2 Y",
     use_rth: bool = True,
 ):
+    """Default chart endpoint - backwards compatible"""
     df = app.state.ibkr.fetch_daily(
         symbol=symbol,
         exchange=exchange,
@@ -88,4 +89,79 @@ def chart_png(
     result = predict_tomorrow(df)
 
     img = render_chart_png(df, result.phase, result.tomorrow_bias, result.flags)
+    return Response(content=img, media_type="image/png")
+
+
+@app.get("/api/chart_waves.png")
+def chart_waves_png(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    duration: str = "2 Y",
+    use_rth: bool = True,
+):
+    """Chart with structure waves (HH/LL pivots)"""
+    df = app.state.ibkr.fetch_daily(
+        symbol=symbol,
+        exchange=exchange,
+        currency=currency,
+        duration=duration,
+        use_rth=use_rth,
+    )
+    df["symbol"] = symbol
+
+    df = add_indicators(df)
+    result = predict_tomorrow(df)
+
+    img = render_chart_waves(df, result.phase, result.tomorrow_bias, result.flags)
+    return Response(content=img, media_type="image/png")
+
+
+@app.get("/api/chart_candlestick.png")
+def chart_candlestick_png(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    duration: str = "2 Y",
+    use_rth: bool = True,
+):
+    """Chart with candlesticks"""
+    df = app.state.ibkr.fetch_daily(
+        symbol=symbol,
+        exchange=exchange,
+        currency=currency,
+        duration=duration,
+        use_rth=use_rth,
+    )
+    df["symbol"] = symbol
+
+    df = add_indicators(df)
+    result = predict_tomorrow(df)
+
+    img = render_chart_candlestick(df, result.phase, result.tomorrow_bias, result.flags)
+    return Response(content=img, media_type="image/png")
+
+
+@app.get("/api/chart_close.png")
+def chart_close_png(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    duration: str = "2 Y",
+    use_rth: bool = True,
+):
+    """Chart with close price line"""
+    df = app.state.ibkr.fetch_daily(
+        symbol=symbol,
+        exchange=exchange,
+        currency=currency,
+        duration=duration,
+        use_rth=use_rth,
+    )
+    df["symbol"] = symbol
+
+    df = add_indicators(df)
+    result = predict_tomorrow(df)
+
+    img = render_chart_close(df, result.phase, result.tomorrow_bias, result.flags)
     return Response(content=img, media_type="image/png")

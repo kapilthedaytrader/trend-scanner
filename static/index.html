@@ -11,6 +11,42 @@
     pre { background:#f7f7f7; padding:10px; white-space: pre-wrap; }
     input { width: 140px; padding: 6px; }
     button { padding: 6px 10px; }
+
+    /* Tab styles */
+    .tabs {
+      display: flex;
+      border-bottom: 2px solid #ddd;
+      margin-bottom: 16px;
+    }
+
+    .tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      background: #f0f0f0;
+      border: 1px solid #ddd;
+      border-bottom: none;
+      margin-right: 4px;
+      border-radius: 4px 4px 0 0;
+    }
+
+    .tab:hover {
+      background: #e0e0e0;
+    }
+
+    .tab.active {
+      background: white;
+      border-bottom: 2px solid white;
+      margin-bottom: -2px;
+      font-weight: bold;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -31,12 +67,49 @@
     </div>
 
     <div style="flex:1;">
-      <h3>Annotated Chart</h3>
-      <img id="chart" alt="chart will appear here"/>
+      <h3>Charts</h3>
+
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('waves')">Structure Waves</div>
+        <div class="tab" onclick="switchTab('candlestick')">Candlestick</div>
+        <div class="tab" onclick="switchTab('close')">Close Line</div>
+      </div>
+
+      <div id="tab-waves" class="tab-content active">
+        <img id="chart-waves" alt="Structure waves chart will appear here"/>
+      </div>
+
+      <div id="tab-candlestick" class="tab-content">
+        <img id="chart-candlestick" alt="Candlestick chart will appear here"/>
+      </div>
+
+      <div id="tab-close" class="tab-content">
+        <img id="chart-close" alt="Close line chart will appear here"/>
+      </div>
     </div>
   </div>
 
 <script>
+let currentTab = 'waves';
+
+function switchTab(tabName) {
+  // Update tab buttons
+  const tabs = document.querySelectorAll('.tab');
+  tabs.forEach(tab => {
+    tab.classList.remove('active');
+  });
+  event.target.classList.add('active');
+
+  // Update tab content
+  const contents = document.querySelectorAll('.tab-content');
+  contents.forEach(content => {
+    content.classList.remove('active');
+  });
+  document.getElementById('tab-' + tabName).classList.add('active');
+
+  currentTab = tabName;
+}
+
 async function run() {
   const symbol = document.getElementById('symbol').value.trim();
   const exchange = document.getElementById('exchange').value.trim();
@@ -44,12 +117,23 @@ async function run() {
   const port = document.getElementById('port').value.trim();
 
   const qs = new URLSearchParams({symbol, exchange, currency});
+
+  // Fetch analysis data
   const r = await fetch('/api/analyze?' + qs.toString());
   const j = await r.json();
   document.getElementById('out').textContent = JSON.stringify(j, null, 2);
 
-  // cache-bust image
-  document.getElementById('chart').src = '/api/chart.png?' + qs.toString() + '&_=' + Date.now();
+  // Load all three chart types with cache-busting
+  const cacheBust = '&_=' + Date.now();
+
+  document.getElementById('chart-waves').src =
+    '/api/chart_waves.png?' + qs.toString() + cacheBust;
+
+  document.getElementById('chart-candlestick').src =
+    '/api/chart_candlestick.png?' + qs.toString() + cacheBust;
+
+  document.getElementById('chart-close').src =
+    '/api/chart_close.png?' + qs.toString() + cacheBust;
 }
 </script>
 </body>

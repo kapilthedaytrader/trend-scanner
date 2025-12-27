@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import pandas as pd
 
@@ -12,26 +12,8 @@ class Pivot:
     kind: str  # "HH" or "LL"
 
 
-def _window_start(i: int, k: int = 3) -> int:
-    return max(0, i - (k - 1))
-
-
-def _hh(df: pd.DataFrame, i: int, k: int = 3) -> Tuple[int, float]:
-    s = _window_start(i, k)
-    win = df.iloc[s:i + 1]
-    j = win["high"].idxmax()
-    return int(df.index.get_loc(j)), float(df.loc[j, "high"])
-
-
-def _ll(df: pd.DataFrame, i: int, k: int = 3) -> Tuple[int, float]:
-    s = _window_start(i, k)
-    win = df.iloc[s:i + 1]
-    j = win["low"].idxmin()
-    return int(df.index.get_loc(j)), float(df.loc[j, "low"])
-
-
 def _initial_trend(df: pd.DataFrame, i: int) -> str:
-    # MA bootstrapping (your option 1.B)
+    """Bootstrap initial trend using MA relationship"""
     row = df.iloc[i]
     sma50 = row.get("sma50")
     sma200 = row.get("sma200")
@@ -47,151 +29,292 @@ def _initial_trend(df: pd.DataFrame, i: int) -> str:
 
 def build_structure_pivots(df: pd.DataFrame) -> List[Pivot]:
     """
-    Builds HH/LL pivots using your rule engine:
-    - Uptrend: HLs hold until low <= prev_HL => compute HH over last <=3 incl break.
-              confirm with 1 lower-high (equal = neutral/wait),
-              then compute LL over last <=3 incl confirm candle.
-    - Downtrend: mirror logic with LH holds until high >= prev_LH.
+    Build HH/LL pivots using precise rules:
+
+    UPTREND:
+    1. Track Higher Lows (HLs) - as long as low > last_HL
+    2. Break: when low <= last_HL, uptrend threatened
+    3. Find HH: max(high) of last <=3 candles including break candle
+    4. Confirm topping: wait for lower-high sequence (next high < prev high)
+    5. Find LL: min(low) of last <=3 candles including confirmation candle
+    6. Plot HH -> LL, switch to downtrend
+
+    DOWNTREND (mirror):
+    1. Track Lower Highs (LHs) - as long as high < last_LH
+    2. Break: when high >= last_LH, downtrend threatened
+    3. Find LL: min(low) of last <=3 candles including break candle
+    4. Confirm bottoming: wait for higher-low sequence (next low > prev low)
+    5. Find HH: max(high) of last <=3 candles including confirmation candle
+    6. Plot LL -> HH, switch to uptrend
     """
     if df.empty:
         return []
 
     pivots: List[Pivot] = []
-    state = _initial_trend(df, 0)
 
-    last_HL: Optional[float] = None
-    last_LH: Optional[float] = None
+    # Bootstrap trend
+    state = "NEUTRAL"
+    for i in range(len(df)):
+        state = _initial_trend(df, i)
+        if state != "NEUTRAL":
+            break
+
+    if state == "NEUTRAL":
+        return []
+
+    # State variables
+    last_HL: Optional[float] = None  # Reference HL in uptrend
+    last_LH: Optional[float] = None  # Reference LH in downtrend
+
+    break_index: Optional[int] = None  # Where the break happened
+    prev_high: Optional[float] = None  # For tracking lower-high confirmation
+    prev_low: Optional[float] = None  # For tracking higher-low confirmation
 
     pending_HH: Optional[Pivot] = None
     pending_LL: Optional[Pivot] = None
 
-    prev_high: Optional[float] = None
-    prev_low: Optional[float] = None
-
-    for i in range(len(df)):
+    i = 0
+    while i < len(df):
         row = df.iloc[i]
         high = float(row["high"])
         low = float(row["low"])
         date = pd.to_datetime(row["date"])
 
-        if state == "NEUTRAL":
-            # bootstrap once MA condition becomes clear
-            state = _initial_trend(df, i)
-            prev_high, prev_low = high, low
-            continue
-
-        # -------------------------
-        # UP state
-        # -------------------------
+        # ============================================================
+        # UPTREND STATE
+        # ============================================================
         if state == "UP":
-            # update HL reference: we keep raising HL when lows are higher
+            # Initialize HL reference
             if last_HL is None:
                 last_HL = low
-            else:
-                # higher low -> raise HL; equal -> neutral (do nothing)
-                if low > last_HL:
-                    last_HL = low
-
-            # break condition: low <= last_HL
-            if last_HL is not None and low <= last_HL:
-                # compute pending HH from last <=3 incl this candle
-                hh_i, hh_price = _hh(df, i, k=3)
-                pending_HH = Pivot(i=hh_i, date=pd.to_datetime(df.iloc[hh_i]["date"]), price=hh_price, kind="HH")
-
-                # Now wait for 1 lower high confirmation (equal = neutral)
-                # We do this by switching to a sub-state using pending_HH not None.
-                state = "UP_WAIT_LH"
-                prev_high = high
+                i += 1
                 continue
 
-        # waiting for lower-high confirmation after HH
-        if state == "UP_WAIT_LH":
-            # Need: current high < previous candle high
-            if prev_high is not None:
-                if high == prev_high:
-                    # equality neutral: keep waiting
-                    prev_high = high
-                    continue
-                if high < prev_high:
-                    # confirmed LH with 1 candle
-                    ll_i, ll_price = _ll(df, i, k=3)
-                    pending_LL = Pivot(i=ll_i, date=pd.to_datetime(df.iloc[ll_i]["date"]), price=ll_price, kind="LL")
+            # Track higher lows - update HL reference
+            if low > last_HL:
+                last_HL = low
+                i += 1
+                continue
 
-                    # finalize HH -> LL
+            # Break detected: low <= last_HL
+            if low <= last_HL:
+                break_index = i
+
+                # Find HH from last <=3 candles including break candle
+                start = max(0, i - 2)
+                window = df.iloc[start:i + 1]
+                hh_idx = window["high"].idxmax()
+                hh_i = int(df.index.get_loc(hh_idx))
+                hh_price = float(df.loc[hh_idx, "high"])
+
+                pending_HH = Pivot(i=hh_i, date=pd.to_datetime(df.iloc[hh_i]["date"]),
+                                   price=hh_price, kind="HH")
+
+                # Switch to confirmation state
+                state = "UP_CONFIRM_TOPPING"
+                prev_high = high
+                i += 1
+                continue
+
+        # ============================================================
+        # UPTREND TOPPING CONFIRMATION STATE
+        # ============================================================
+        elif state == "UP_CONFIRM_TOPPING":
+            # Wait for lower-high sequence
+            if prev_high is not None:
+                # Check if current high is lower than previous high
+                if high < prev_high:
+                    # Lower high confirmed! Now find LL
+                    # LL from last <=3 candles including this confirmation candle
+                    start = max(0, i - 2)
+                    window = df.iloc[start:i + 1]
+                    ll_idx = window["low"].idxmin()
+                    ll_i = int(df.index.get_loc(ll_idx))
+                    ll_price = float(df.loc[ll_idx, "low"])
+
+                    pending_LL = Pivot(i=ll_i, date=pd.to_datetime(df.iloc[ll_i]["date"]),
+                                       price=ll_price, kind="LL")
+
+                    # Add both pivots
                     if pending_HH:
                         pivots.append(pending_HH)
                     pivots.append(pending_LL)
 
-                    # switch to DOWN mode; set last_LH baseline to current high (start tracking LH)
+                    # Switch to downtrend
                     state = "DOWN"
-                    last_LH = high
+                    last_LH = high  # Initialize LH reference
                     last_HL = None
                     pending_HH = None
                     pending_LL = None
-                    prev_high = high
-                    prev_low = low
+                    prev_high = None
+                    prev_low = None
+                    break_index = None
+                    i += 1
                     continue
 
-            prev_high = high
-            continue
-
-        # -------------------------
-        # DOWN state (mirror)
-        # -------------------------
-        if state == "DOWN":
-            # update LH reference: we keep lowering LH when highs are lower
-            if last_LH is None:
-                last_LH = high
-            else:
-                if high < last_LH:
-                    last_LH = high
-
-            # break condition: high >= last_LH
-            if last_LH is not None and high >= last_LH:
-                # compute pending LL from last <=3 incl this candle
-                ll_i, ll_price = _ll(df, i, k=3)
-                pending_LL = Pivot(i=ll_i, date=pd.to_datetime(df.iloc[ll_i]["date"]), price=ll_price, kind="LL")
-
-                state = "DOWN_WAIT_HH"
-                prev_low = low
+                # Equal high or higher high - keep waiting
+                prev_high = high
+                i += 1
                 continue
 
-        # waiting for higher-low confirmation after LL (mirror: look for 1 higher low?)
-        if state == "DOWN_WAIT_HH":
-            # Mirror of lower-high confirm: to confirm reversal upward, we want 1 higher low
-            if prev_low is not None:
-                if low == prev_low:
-                    prev_low = low
-                    continue
-                if low > prev_low:
-                    # confirmed HL with 1 candle
-                    hh_i, hh_price = _hh(df, i, k=3)
-                    pending_HH = Pivot(i=hh_i, date=pd.to_datetime(df.iloc[hh_i]["date"]), price=hh_price, kind="HH")
+            prev_high = high
+            i += 1
+            continue
 
-                    # finalize LL -> HH (note: LL already implied by pending_LL)
+        # ============================================================
+        # DOWNTREND STATE
+        # ============================================================
+        elif state == "DOWN":
+            # Initialize LH reference
+            if last_LH is None:
+                last_LH = high
+                i += 1
+                continue
+
+            # Track lower highs - update LH reference
+            if high < last_LH:
+                last_LH = high
+                i += 1
+                continue
+
+            # Break detected: high >= last_LH
+            if high >= last_LH:
+                break_index = i
+
+                # Find LL from last <=3 candles including break candle
+                start = max(0, i - 2)
+                window = df.iloc[start:i + 1]
+                ll_idx = window["low"].idxmin()
+                ll_i = int(df.index.get_loc(ll_idx))
+                ll_price = float(df.loc[ll_idx, "low"])
+
+                pending_LL = Pivot(i=ll_i, date=pd.to_datetime(df.iloc[ll_i]["date"]),
+                                   price=ll_price, kind="LL")
+
+                # Switch to confirmation state
+                state = "DOWN_CONFIRM_BOTTOMING"
+                prev_low = low
+                i += 1
+                continue
+
+        # ============================================================
+        # DOWNTREND BOTTOMING CONFIRMATION STATE
+        # ============================================================
+        elif state == "DOWN_CONFIRM_BOTTOMING":
+            # Wait for higher-low sequence
+            if prev_low is not None:
+                # Check if current low is higher than previous low
+                if low > prev_low:
+                    # Higher low confirmed! Now find HH
+                    # HH from last <=3 candles including this confirmation candle
+                    start = max(0, i - 2)
+                    window = df.iloc[start:i + 1]
+                    hh_idx = window["high"].idxmax()
+                    hh_i = int(df.index.get_loc(hh_idx))
+                    hh_price = float(df.loc[hh_idx, "high"])
+
+                    pending_HH = Pivot(i=hh_i, date=pd.to_datetime(df.iloc[hh_i]["date"]),
+                                       price=hh_price, kind="HH")
+
+                    # Add both pivots
                     if pending_LL:
                         pivots.append(pending_LL)
                     pivots.append(pending_HH)
 
+                    # Switch to uptrend
                     state = "UP"
-                    last_HL = low
+                    last_HL = low  # Initialize HL reference
                     last_LH = None
                     pending_HH = None
                     pending_LL = None
-                    prev_high = high
-                    prev_low = low
+                    prev_high = None
+                    prev_low = None
+                    break_index = None
+                    i += 1
                     continue
 
+                # Equal low or lower low - keep waiting
+                prev_low = low
+                i += 1
+                continue
+
             prev_low = low
+            i += 1
             continue
 
-        prev_high, prev_low = high, low
+        # NEUTRAL state - shouldn't reach here but safety
+        i += 1
 
-    # de-dup consecutive same-kind pivots (optional)
+    # ============================================================
+    # END OF DATA - Handle pending pivots that weren't confirmed
+    # ============================================================
+    if state == "UP_CONFIRM_TOPPING" and pending_HH:
+        # We have a pending HH but no LL confirmation yet
+        # Add the HH and try to find the most recent LL
+        pivots.append(pending_HH)
+
+        # Find LL from last few candles
+        if len(df) >= 3:
+            window = df.iloc[-3:]
+            ll_idx = window["low"].idxmin()
+            ll_i = int(df.index.get_loc(ll_idx))
+            ll_price = float(df.loc[ll_idx, "low"])
+            pending_LL = Pivot(i=ll_i, date=pd.to_datetime(df.iloc[ll_i]["date"]),
+                               price=ll_price, kind="LL")
+            pivots.append(pending_LL)
+
+    elif state == "DOWN_CONFIRM_BOTTOMING" and pending_LL:
+        # We have a pending LL but no HH confirmation yet
+        # Add the LL and try to find the most recent HH
+        pivots.append(pending_LL)
+
+        # Find HH from last few candles
+        if len(df) >= 3:
+            window = df.iloc[-3:]
+            hh_idx = window["high"].idxmax()
+            hh_i = int(df.index.get_loc(hh_idx))
+            hh_price = float(df.loc[hh_idx, "high"])
+            pending_HH = Pivot(i=hh_i, date=pd.to_datetime(df.iloc[hh_i]["date"]),
+                               price=hh_price, kind="HH")
+            pivots.append(pending_HH)
+
+    # Clean up consecutive same-kind pivots - keep only the most extreme
+    # For consecutive HHs, keep the highest; for consecutive LLs, keep the lowest
     cleaned: List[Pivot] = []
-    for p in pivots:
-        if cleaned and cleaned[-1].kind == p.kind and cleaned[-1].i == p.i:
-            continue
-        cleaned.append(p)
+    i = 0
+    while i < len(pivots):
+        current = pivots[i]
 
-    return cleaned
+        # Look ahead for consecutive same-kind pivots
+        j = i + 1
+        same_kind_group = [current]
+        while j < len(pivots) and pivots[j].kind == current.kind:
+            same_kind_group.append(pivots[j])
+            j += 1
+
+        # Keep only the most extreme pivot from the group
+        if current.kind == "HH":
+            # Keep the highest HH
+            best = max(same_kind_group, key=lambda p: p.price)
+        else:  # LL
+            # Keep the lowest LL
+            best = min(same_kind_group, key=lambda p: p.price)
+
+        cleaned.append(best)
+        i = j  # Skip to next different kind
+
+    # Final safety check: ensure strict alternation HH->LL->HH->LL
+    final: List[Pivot] = []
+    for p in cleaned:
+        if not final:
+            final.append(p)
+        elif final[-1].kind != p.kind:
+            final.append(p)
+        else:
+            # Same kind consecutive - keep the more extreme one
+            if p.kind == "HH" and p.price > final[-1].price:
+                final[-1] = p
+            elif p.kind == "LL" and p.price < final[-1].price:
+                final[-1] = p
+
+    return final
